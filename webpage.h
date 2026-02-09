@@ -164,8 +164,10 @@ const char index_html[] PROGMEM = R"rawliteral(
         input[type="checkbox"]::before { content: ''; position: absolute; width: 16px; height: 16px; background: #fff; border-radius: 50%; top: 2px; left: 2px; transition: 0.3s; }
         input[type="checkbox"]:checked::before { left: 22px; }
 
-        .btn-save { width: 100%; padding: 15px; border-radius: 15px; border: none; background: var(--secondary); color: #fff; font-weight: 600; margin-top: 20px; cursor: pointer; }
-        input[type="text"], input[type="password"], input[type="number"] {
+        .btn-save { width: 100%; padding: 15px; border-radius: 15px; border: none; background: var(--secondary); color: #fff; font-weight: 600; margin-top: 20px; cursor: pointer; transition: 0.3s; }
+        .btn-save:hover { transform: scale(1.02); }
+        .btn-save.active { background: var(--success); box-shadow: 0 0 20px rgba(34, 197, 94, 0.5); }
+        input[type="text"], input[type="password"], input[type="number"], input[type="time"] {
             width: 100%; background: var(--glass); border: 1px solid rgba(255,255,255,0.1);
             color: #fff; padding: 12px; border-radius: 10px; margin-bottom: 10px; font-family: inherit;
         }
@@ -206,6 +208,11 @@ const char index_html[] PROGMEM = R"rawliteral(
                 <span class="health-val" id="health-txt">READY</span>
             </div>
             <div id="ist-clock" style="position: absolute; bottom: -25px; font-size: 0.8rem; font-weight: 600; color: var(--primary); letter-spacing: 1px;">IST --:--</div>
+        </div>
+
+        <div style="text-align: center; margin-bottom: 20px; padding: 10px; background: var(--glass); border-radius: 15px;">
+            <div style="font-size: 0.7rem; opacity: 0.6;">Active Schedule</div>
+            <div style="font-size: 1.2rem; font-weight: 600; color: var(--primary);" id="main-sched-display">--:-- IST</div>
         </div>
 
         <div class="grid">
@@ -309,12 +316,12 @@ const char index_html[] PROGMEM = R"rawliteral(
         <p style="font-size: 0.8rem; opacity: 0.6; margin-bottom: 20px;">* Manual toggle only works when Automation is OFF</p>
         
         <div class="grid" style="grid-template-columns: repeat(2, 1fr);">
-            <button class="btn-save" id="btn-m1" onclick="togglePump(1)" style="background: var(--glass);">Pump: pH+</button>
-            <button class="btn-save" id="btn-m2" onclick="togglePump(2)" style="background: var(--glass);">Pump: pH-</button>
-            <button class="btn-save" id="btn-m3" onclick="togglePump(3)" style="background: var(--glass);">Pump: TDS+</button>
-            <button class="btn-save" id="btn-m4" onclick="togglePump(4)" style="background: var(--glass);">Pump: TDS-</button>
-            <button class="btn-save" id="btn-m5" onclick="togglePump(5)" style="background: var(--glass);">Pump: Fresh</button>
-            <button class="btn-save" id="btn-m6" onclick="togglePump(6)" style="background: var(--glass);">Solenoid</button>
+            <button class="btn-save" id="btn-m1" onclick="togglePump(1)">Pump: pH+</button>
+            <button class="btn-save" id="btn-m2" onclick="togglePump(2)">Pump: pH-</button>
+            <button class="btn-save" id="btn-m3" onclick="togglePump(3)">Pump: TDS+</button>
+            <button class="btn-save" id="btn-m4" onclick="togglePump(4)">Pump: TDS-</button>
+            <button class="btn-save" id="btn-m5" onclick="togglePump(5)">Pump: Fresh</button>
+            <button class="btn-save" id="btn-m6" onclick="togglePump(6)">Solenoid</button>
         </div>
     </div>
 
@@ -422,6 +429,14 @@ const char index_html[] PROGMEM = R"rawliteral(
             updateRack('p4', d.p4);
             updateRack('p5', d.p5);
             
+            // Manual Button Feedback
+            updateButton('btn-m1', d.p1);
+            updateButton('btn-m2', d.p2);
+            updateButton('btn-m3', d.p3);
+            updateButton('btn-m4', d.p4);
+            updateButton('btn-m5', d.p5);
+            updateButton('btn-m6', d.sol);
+            
             // Icons
             document.getElementById('ph-up-icon').className = d.p1 ? 'ph-icon active-up' : 'ph-icon';
             document.getElementById('ph-down-icon').className = d.p2 ? 'ph-icon active-down' : 'ph-icon';
@@ -436,12 +451,21 @@ const char index_html[] PROGMEM = R"rawliteral(
             else item.classList.remove('on');
         }
 
+        function updateButton(id, state) {
+            var btn = document.getElementById(id);
+            if (btn) {
+                if (state) btn.classList.add('active');
+                else btn.classList.remove('active');
+            }
+        }
+
         function updateSettings(d) {
             // Convert H:M to HH:MM for time input
             let h = d.h < 10 ? '0' + d.h : d.h;
             let m = d.m < 10 ? '0' + d.m : d.m;
             document.getElementById('f-time').value = `${h}:${m}`;
             document.getElementById('txt-sched-val').innerText = `${h}:${m}`;
+            document.getElementById('main-sched-display').innerText = `${h}:${m} IST`;
             document.getElementById('f-d').value = d.d;
 
             if (d.ct) {

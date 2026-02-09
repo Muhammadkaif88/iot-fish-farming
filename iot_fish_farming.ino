@@ -140,7 +140,8 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
           digitalWrite(pin, !digitalRead(pin)); // Toggle
         }
       }
-      // Variables updated
+      // Immediately notify clients of state change
+      notifyClients();
     } else if (cmd == "save_wifi") {
       String new_ssid = doc["s"];
       String new_pass = doc["p"];
@@ -230,13 +231,21 @@ void setup() {
     request->send_P(200, "text/html", index_html);
   });
 
+  // Captive Portal Detection URLs (Apple, Android, Windows)
+  server.on("/hotspot-detect.html", HTTP_GET,
+            [](AsyncWebServerRequest *request) {
+              request->send_P(200, "text/html", index_html);
+            });
+  server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html);
+  });
+  server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html);
+  });
+
   // Captive Portal Catch-All
   server.onNotFound([](AsyncWebServerRequest *request) {
-    if (WiFi.softAPIP() == WiFi.localIP() || WiFi.status() != WL_CONNECTED) {
-      request->redirect("/");
-    } else {
-      request->send(404, "text/plain", "Not Found");
-    }
+    request->send_P(200, "text/html", index_html);
   });
 
   server.begin();
