@@ -5,9 +5,10 @@
 #include <AsyncTCP.h>
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
-
 
 // ==========================================
 //           NETWORK CONFIGURATION
