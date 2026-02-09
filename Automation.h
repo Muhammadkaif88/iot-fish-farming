@@ -44,6 +44,7 @@ int servoDuration = 1; // 1 Second default
 
 // State for Scheduler
 int lastFedSlot = -1; // Specific time slot (Day + HH + MM) that we last fed
+unsigned long lastFedMillis = 0; // Uptime when last fed
 
 // --- Helper Functions ---
 
@@ -124,6 +125,7 @@ void runFeeder() {
   if (!isFeeding) {
     feederServo.write(90); // Open
     feedStartTime = millis();
+    lastFedMillis = feedStartTime;
     isFeeding = true;
   }
 }

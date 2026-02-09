@@ -8,7 +8,6 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
-
 // ==========================================
 //           NETWORK CONFIGURATION
 // ==========================================
@@ -78,6 +77,7 @@ void notifyClients() {
   doc["h"] = feedHour;
   doc["m"] = feedMinute;
   doc["d"] = servoDuration;
+  doc["lf"] = (lastFedMillis > 0) ? (millis() - lastFedMillis) / 1000 : -1;
 
   String output3;
   serializeJson(doc, output3);
