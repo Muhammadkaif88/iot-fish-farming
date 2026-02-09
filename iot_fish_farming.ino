@@ -3,10 +3,11 @@
 #include "webpage.h"
 #include <ArduinoJson.h>
 #include <AsyncTCP.h>
+#include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
-#include <ESPmDNS.h>
-#include <Preferences.h>
 #include <WiFi.h>
+#include <time.h>
+
 
 // ==========================================
 //           NETWORK CONFIGURATION
@@ -34,6 +35,8 @@ const int daylightOffset_sec = 0;
 // ==========================================
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
 
 // ==========================================
 //            WEBSOCKET HANDLING
@@ -78,6 +81,16 @@ void notifyClients() {
   doc["m"] = feedMinute;
   doc["d"] = servoDuration;
   doc["lf"] = (lastFedMillis > 0) ? (millis() - lastFedMillis) / 1000 : -1;
+
+  // Get current IST time
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char timeStr[10];
+    strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
+    doc["ct"] = timeStr;
+  } else {
+    doc["ct"] = "--:--";
+  }
 
   String output3;
   serializeJson(doc, output3);
@@ -216,8 +229,21 @@ void setup() {
     request->send_P(200, "text/html", index_html);
   });
 
+  // Captive Portal Catch-All
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    if (WiFi.softAPIP() == WiFi.localIP() || WiFi.status() != WL_CONNECTED) {
+      request->redirect("/");
+    } else {
+      request->send(404, "text/plain", "Not Found");
+    }
+  });
+
   server.begin();
-  Serial.println("Web Server Started");
+
+  // 4. Start DNS Server for Captive Portal
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  Serial.println("Web Server & DNS Started");
 
   // Setup mDNS
   if (MDNS.begin("fishfarm")) {
@@ -255,6 +281,9 @@ void loop() {
 
   // 4. Clean up WebSocket clients
   ws.cleanupClients();
+
+  // 5. DNS Server for Captive Portal
+  dnsServer.processNextRequest();
 
   // No delay() needed here, loop runs as fast as possible
 

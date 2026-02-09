@@ -205,6 +205,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                 <span class="health-status">System</span>
                 <span class="health-val" id="health-txt">READY</span>
             </div>
+            <div id="ist-clock" style="position: absolute; bottom: -25px; font-size: 0.8rem; font-weight: 600; color: var(--primary); letter-spacing: 1px;">IST --:--</div>
         </div>
 
         <div class="grid">
@@ -267,6 +268,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <div id="food-container"></div>
                 </div>
                 <div class="last-fed" id="txt-last-fed">Last meal: -- ago</div>
+                <div style="font-size: 0.6rem; margin-top: 5px; opacity: 0.4;">Schedule: <span id="txt-sched-val">--:--</span></div>
             </div>
         </div>
 
@@ -321,14 +323,16 @@ const char index_html[] PROGMEM = R"rawliteral(
         <h2 style="margin-top: 0;">Configuration</h2>
         
         <div class="card" style="margin-bottom: 20px;">
-            <h3>Feed Schedule</h3>
-            <div style="display: flex; gap: 10px;">
-                <input type="number" id="f-h" placeholder="Hour (0-23)" min="0" max="23">
-                <input type="number" id="f-m" placeholder="Min (0-59)" min="0" max="59">
+            <h3>Feeding Schedule (IST)</h3>
+            <div style="font-size: 0.7rem; margin-bottom: 10px; opacity: 0.6;">Device Time: <span id="tool-ist-clock">--:--</span></div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <input type="time" id="f-time" style="flex: 2; margin: 0;">
+                <div style="flex: 1;">
+                    <label style="font-size: 0.6rem; display: block;">Duration (s)</label>
+                    <input type="number" id="f-d" value="1" style="margin: 0;">
+                </div>
             </div>
-            <label>Servo Duration (sec)</label>
-            <input type="number" id="f-d" value="1">
-            <button class="btn-save" onclick="saveSettings()">Save Schedule</button>
+            <button class="btn-save" onclick="saveSettings()">Apply IST Schedule</button>
         </div>
 
         <div class="card">
@@ -433,9 +437,18 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         function updateSettings(d) {
-            document.getElementById('f-h').value = d.h;
-            document.getElementById('f-m').value = d.m;
+            // Convert H:M to HH:MM for time input
+            let h = d.h < 10 ? '0' + d.h : d.h;
+            let m = d.m < 10 ? '0' + d.m : d.m;
+            document.getElementById('f-time').value = `${h}:${m}`;
+            document.getElementById('txt-sched-val').innerText = `${h}:${m}`;
             document.getElementById('f-d').value = d.d;
+
+            if (d.ct) {
+                document.getElementById('ist-clock').innerText = 'IST ' + d.ct;
+                document.getElementById('tool-ist-clock').innerText = d.ct;
+            }
+
             if (d.lf !== undefined && d.lf !== -1) {
                 lastFedTime = Date.now() - (d.lf * 1000);
                 updateLastFed();
@@ -516,13 +529,16 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
         function togglePump(id) { ws.send(JSON.stringify({cmd: 'toggle', id: id})); }
         function saveSettings() {
+            let timeVal = document.getElementById('f-time').value;
+            if(!timeVal) return;
+            let parts = timeVal.split(':');
             ws.send(JSON.stringify({
                 cmd: 'save_settings',
-                h: parseInt(document.getElementById('f-h').value),
-                m: parseInt(document.getElementById('f-m').value),
+                h: parseInt(parts[0]),
+                m: parseInt(parts[1]),
                 d: parseInt(document.getElementById('f-d').value)
             }));
-            alert("Schedule Updated!");
+            alert("IST Schedule Updated!");
         }
         function saveWiFi() {
             ws.send(JSON.stringify({
