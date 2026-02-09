@@ -38,9 +38,14 @@ bool isFeeding = false;
 unsigned long feedStartTime = 0;
 
 // Default Settings (Can be updated via Web)
-int feedHour = 07;     // 7 AM default
-int feedMinute = 00;   // 00 Minutes
-int servoDuration = 1; // 1 Second default
+const int MAX_FEED_TIMES = 5;
+int feedTimes[MAX_FEED_TIMES][2] = {{7, 0},
+                                    {-1, -1},
+                                    {-1, -1},
+                                    {-1, -1},
+                                    {-1, -1}}; // [hour, minute], -1 = inactive
+int feedCount = 1;                             // Number of active schedules
+int servoDuration = 1;                         // 1 Second default
 
 // State for Scheduler
 int lastFedSlot = -1; // Specific time slot (Day + HH + MM) that we last fed
@@ -144,16 +149,22 @@ void checkSchedule() {
   }
 
   // Calculate current slot ID: Day of Year * 10000 + Hour * 100 + Min
-  // Example: Day 100, 14:30 -> 1001430. Unique enough for a year.
   int currentSlot =
       timeinfo.tm_yday * 10000 + timeinfo.tm_hour * 100 + timeinfo.tm_min;
 
-  // Check if it's time to feed
-  if (timeinfo.tm_hour == feedHour && timeinfo.tm_min == feedMinute) {
-    // Ensure we trigger only once for this specific time slot
-    if (currentSlot != lastFedSlot) {
-      runFeeder();
-      lastFedSlot = currentSlot;
+  // Check all active feeding times
+  for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
+    if (feedTimes[i][0] == -1)
+      continue; // Skip inactive slots
+
+    if (timeinfo.tm_hour == feedTimes[i][0] &&
+        timeinfo.tm_min == feedTimes[i][1]) {
+      // Ensure we trigger only once for this specific time slot
+      if (currentSlot != lastFedSlot) {
+        runFeeder();
+        lastFedSlot = currentSlot;
+        break; // Only feed once per minute
+      }
     }
   }
 }

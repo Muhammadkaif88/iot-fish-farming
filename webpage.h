@@ -211,8 +211,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         </div>
 
         <div style="text-align: center; margin-bottom: 20px; padding: 10px; background: var(--glass); border-radius: 15px;">
-            <div style="font-size: 0.7rem; opacity: 0.6;">Active Schedule</div>
-            <div style="font-size: 1.2rem; font-weight: 600; color: var(--primary);" id="main-sched-display">--:-- IST</div>
+            <div style="font-size: 0.7rem; opacity: 0.6;">Active Schedules</div>
+            <div style="font-size: 1rem; font-weight: 600; color: var(--primary);" id="main-sched-display">--:--</div>
         </div>
 
         <div class="grid">
@@ -330,16 +330,22 @@ const char index_html[] PROGMEM = R"rawliteral(
         <h2 style="margin-top: 0;">Configuration</h2>
         
         <div class="card" style="margin-bottom: 20px;">
-            <h3>Feeding Schedule (IST)</h3>
+            <h3>Feeding Schedules (IST)</h3>
             <div style="font-size: 0.7rem; margin-bottom: 10px; opacity: 0.6;">Device Time: <span id="tool-ist-clock">--:--</span></div>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <input type="time" id="f-time" style="flex: 2; margin: 0;">
-                <div style="flex: 1;">
-                    <label style="font-size: 0.6rem; display: block;">Duration (s)</label>
-                    <input type="number" id="f-d" value="1" style="margin: 0;">
-                </div>
+            
+            <div id="schedule-list" style="margin-bottom: 15px;"></div>
+            
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="time" id="new-time" style="flex: 2; margin: 0;" placeholder="Add new time">
+                <button class="btn-save" onclick="addSchedule()" style="flex: 1; margin: 0; padding: 10px;">+ Add</button>
             </div>
-            <button class="btn-save" onclick="saveSettings()">Apply IST Schedule</button>
+            
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <label style="font-size: 0.7rem; flex: 1;">Servo Duration (s)</label>
+                <input type="number" id="f-d" value="1" style="flex: 1; margin: 0;">
+            </div>
+            
+            <button class="btn-save" onclick="saveAllSchedules()">Save All Schedules</button>
         </div>
 
         <div class="card">
@@ -459,13 +465,16 @@ const char index_html[] PROGMEM = R"rawliteral(
             }
         }
 
+        let schedules = []; // Global array of feeding times
+
         function updateSettings(d) {
-            // Convert H:M to HH:MM for time input
-            let h = d.h < 10 ? '0' + d.h : d.h;
-            let m = d.m < 10 ? '0' + d.m : d.m;
-            document.getElementById('f-time').value = `${h}:${m}`;
-            document.getElementById('txt-sched-val').innerText = `${h}:${m}`;
-            document.getElementById('main-sched-display').innerText = `${h}:${m} IST`;
+            // Receive array of feeding times
+            if (d.times && Array.isArray(d.times)) {
+                schedules = d.times;
+                renderScheduleList();
+                updateDashboardSchedules();
+            }
+            
             document.getElementById('f-d').value = d.d;
 
             if (d.ct) {
@@ -477,6 +486,70 @@ const char index_html[] PROGMEM = R"rawliteral(
                 lastFedTime = Date.now() - (d.lf * 1000);
                 updateLastFed();
             }
+        }
+
+        function renderScheduleList() {
+            let list = document.getElementById('schedule-list');
+            list.innerHTML = '';
+            
+            schedules.forEach((time, idx) => {
+                let h = time[0] < 10 ? '0' + time[0] : time[0];
+                let m = time[1] < 10 ? '0' + time[1] : time[1];
+                let div = document.createElement('div');
+                div.style.cssText = 'display: flex; gap: 10px; align-items: center; margin-bottom: 8px; padding: 8px; background: var(--glass); border-radius: 8px;';
+                div.innerHTML = `
+                    <span style="flex: 1; font-weight: 600;">${h}:${m} IST</span>
+                    <button onclick="removeSchedule(${idx})" style="padding: 5px 10px; background: var(--danger); border: none; border-radius: 5px; color: #fff; cursor: pointer;">Remove</button>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function updateDashboardSchedules() {
+            let display = document.getElementById('main-sched-display');
+            if (schedules.length === 0) {
+                display.innerText = '--:--';
+            } else {
+                let times = schedules.map(t => {
+                    let h = t[0] < 10 ? '0' + t[0] : t[0];
+                    let m = t[1] < 10 ? '0' + t[1] : t[1];
+                    return `${h}:${m}`;
+                }).join(', ');
+                display.innerText = times + ' IST';
+            }
+        }
+
+        function addSchedule() {
+            let newTime = document.getElementById('new-time').value;
+            if (!newTime) {
+                alert('Please select a time');
+                return;
+            }
+            if (schedules.length >= 5) {
+                alert('Maximum 5 schedules allowed');
+                return;
+            }
+            
+            let parts = newTime.split(':');
+            schedules.push([parseInt(parts[0]), parseInt(parts[1])]);
+            renderScheduleList();
+            updateDashboardSchedules();
+            document.getElementById('new-time').value = '';
+        }
+
+        function removeSchedule(idx) {
+            schedules.splice(idx, 1);
+            renderScheduleList();
+            updateDashboardSchedules();
+        }
+
+        function saveAllSchedules() {
+            ws.send(JSON.stringify({
+                cmd: 'save_settings',
+                times: schedules,
+                d: parseInt(document.getElementById('f-d').value)
+            }));
+            alert('All Schedules Saved!');
         }
 
         function updateTDSCloud(val) {

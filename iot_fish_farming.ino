@@ -75,11 +75,17 @@ void notifyClients() {
   serializeJson(doc, output2);
   ws.textAll(output2);
 
-  // Settings
+  // Settings (send all feeding times)
   doc.clear();
   doc["type"] = "settings";
-  doc["h"] = feedHour;
-  doc["m"] = feedMinute;
+  JsonArray times = doc.createNestedArray("times");
+  for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
+    if (feedTimes[i][0] != -1) {
+      JsonArray slot = times.createNestedArray();
+      slot.add(feedTimes[i][0]);
+      slot.add(feedTimes[i][1]);
+    }
+  }
   doc["d"] = servoDuration;
   doc["lf"] = (lastFedMillis > 0) ? (millis() - lastFedMillis) / 1000 : -1;
 
@@ -159,10 +165,28 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         ESP.restart();
       }
     } else if (cmd == "save_settings") {
-      feedHour = doc["h"];
-      feedMinute = doc["m"];
+      // Receive array of feeding times
+      JsonArray times = doc["times"];
+      feedCount = 0;
+
+      // Clear all slots first
+      for (int i = 0; i < MAX_FEED_TIMES; i++) {
+        feedTimes[i][0] = -1;
+        feedTimes[i][1] = -1;
+      }
+
+      // Populate from received data
+      for (JsonArray slot : times) {
+        if (feedCount >= MAX_FEED_TIMES)
+          break;
+        feedTimes[feedCount][0] = slot[0];
+        feedTimes[feedCount][1] = slot[1];
+        feedCount++;
+      }
+
       servoDuration = doc["d"];
-      Serial.println("Settings Updated via Web");
+      Serial.println("Multiple Schedules Updated via Web");
+      notifyClients(); // Broadcast updated schedules
     }
   }
 }
@@ -292,8 +316,12 @@ void loop() {
   // 4. Clean up WebSocket clients
   ws.cleanupClients();
 
-  // 5. DNS Server for Captive Portal
-  dnsServer.processNextRequest();
+  // 5. DNS Server for Captive Portal (throttled to every 50ms)
+  static unsigned long lastDNS = 0;
+  if (millis() - lastDNS > 50) {
+    dnsServer.processNextRequest();
+    lastDNS = millis();
+  }
 
   // No delay() needed here, loop runs as fast as possible
 
