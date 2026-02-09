@@ -436,6 +436,10 @@ const char index_html[] PROGMEM = R"rawliteral(
             document.getElementById('f-h').value = d.h;
             document.getElementById('f-m').value = d.m;
             document.getElementById('f-d').value = d.d;
+            if (d.lf !== undefined && d.lf !== -1) {
+                lastFedTime = Date.now() - (d.lf * 1000);
+                updateLastFed();
+            }
         }
 
         function updateTDSCloud(val) {
