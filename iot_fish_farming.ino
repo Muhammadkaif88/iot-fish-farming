@@ -256,18 +256,25 @@ void setup() {
   });
 
   // Captive Portal Detection URLs (Apple, Android, Windows)
+  // Use 302 redirects for faster response
   server.on("/hotspot-detect.html", HTTP_GET,
             [](AsyncWebServerRequest *request) {
-              request->send_P(200, "text/html", index_html);
+              request->redirect("http://" + WiFi.softAPIP().toString());
             });
   server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+    request->redirect("http://" + WiFi.softAPIP().toString());
   });
   server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+    request->redirect("http://" + WiFi.softAPIP().toString());
+  });
+  server.on("/redirect", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString());
+  });
+  server.on("/success.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "success");
   });
 
-  // Captive Portal Catch-All
+  // Captive Portal Catch-All - Always serve the portal
   server.onNotFound([](AsyncWebServerRequest *request) {
     request->send_P(200, "text/html", index_html);
   });
