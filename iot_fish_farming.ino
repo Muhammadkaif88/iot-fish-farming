@@ -14,9 +14,6 @@
 //           NETWORK CONFIGURATION
 // ==========================================
 
-// ==========================================
-//           NETWORK CONFIGURATION
-// ==========================================
 String ssid = "";
 String password = "";
 
@@ -42,6 +39,32 @@ const byte DNS_PORT = 53;
 // ==========================================
 //            WEBSOCKET HANDLING
 // ==========================================
+
+volatile bool needsBroadcast = false;
+
+void notifySettings(AsyncWebSocketClient *client = nullptr) {
+  JsonDocument doc;
+  doc["type"] = "settings";
+  JsonArray times = doc["times"].to<JsonArray>();
+  for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
+    if (feedTimes[i][0] != -1) {
+      JsonArray slot = times.add<JsonArray>();
+      slot.add(feedTimes[i][0]);
+      slot.add(feedTimes[i][1]);
+    }
+  }
+  doc["d"] = servoDuration;
+
+  String output;
+  serializeJson(doc, output);
+
+  if (client) {
+    client->text(output);
+  } else {
+    ws.textAll(output);
+  }
+}
+
 void notifyClients() {
   // Defines a JSON buffer
   JsonDocument doc;
@@ -61,33 +84,17 @@ void notifyClients() {
   doc.clear();
   doc["type"] = "states";
   doc["auto"] = autoMode;
-  // Note: Relays are often Active LOW.
-  // If digitalWrite(LOW) = ON, then !digitalRead() is true for ON.
-  // Adjust logic based on your relay module. Assuming LOW = ON here.
-  doc["p1"] = !digitalRead(PIN_RELAY_PUMP_FILL);
-  doc["p2"] = !digitalRead(PIN_RELAY_TDS_1);
-  doc["p3"] = !digitalRead(PIN_RELAY_TDS_2);
-  doc["p4"] = !digitalRead(PIN_RELAY_PH_UP);
-  doc["p5"] = !digitalRead(PIN_RELAY_PH_DOWN);
-  doc["sol"] = !digitalRead(PIN_RELAY_SOLENOID);
 
-  String output2;
-  serializeJson(doc, output2);
-  ws.textAll(output2);
+  // Use logical state from Automation.h for faster feedback
+  doc["p1"] = relays[1].active;
+  doc["p2"] = relays[2].active;
+  doc["p3"] = relays[3].active;
+  doc["p4"] = relays[4].active;
+  doc["p5"] = relays[5].active;
+  doc["p6"] = relays[6].active;
 
-  // Settings (send all feeding times)
-  doc.clear();
-  doc["type"] = "settings";
-  JsonArray times = doc.createNestedArray("times");
-  for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
-    if (feedTimes[i][0] != -1) {
-      JsonArray slot = times.createNestedArray();
-      slot.add(feedTimes[i][0]);
-      slot.add(feedTimes[i][1]);
-    }
-  }
-  doc["d"] = servoDuration;
   doc["lf"] = (lastFedMillis > 0) ? (millis() - lastFedMillis) / 1000 : -1;
+  doc["nr"] = getSecondsToNextFeed();
 
   // Get current IST time
   struct tm timeinfo;
@@ -99,9 +106,51 @@ void notifyClients() {
     doc["ct"] = "--:--";
   }
 
-  String output3;
-  serializeJson(doc, output3);
-  ws.textAll(output3);
+  String output2;
+  serializeJson(doc, output2);
+  ws.textAll(output2);
+}
+
+void saveInternalSettings() {
+  preferences.begin("settings", false);
+  preferences.putInt("count", feedCount);
+  preferences.putInt("dur", servoDuration);
+  // Save times as a flat blob if possible, or individual keys
+  // Simplified: Up to 5 times = 10 ints.
+  // We'll use keys t0_h, t0_m, t1_h...
+  for (int i = 0; i < MAX_FEED_TIMES; i++) {
+    char keyH[10], keyM[10];
+    sprintf(keyH, "t%d_h", i);
+    sprintf(keyM, "t%d_m", i);
+    preferences.putInt(keyH, feedTimes[i][0]);
+    preferences.putInt(keyM, feedTimes[i][1]);
+  }
+  preferences.end();
+  Serial.println("Settings Saved to Flash");
+}
+
+void loadInternalSettings() {
+  preferences.begin("settings", true);
+  feedCount = preferences.getInt("count", 1);
+  servoDuration = preferences.getInt("dur", 1);
+
+  for (int i = 0; i < MAX_FEED_TIMES; i++) {
+    char keyH[10], keyM[10];
+    sprintf(keyH, "t%d_h", i);
+    sprintf(keyM, "t%d_m", i);
+    // Default to what we had in Automation.h if needed, or -1 usually
+    // The default setup in Automation.h writes to index 0.
+    // If flash is empty (returns 0 or 0), we might overwrite.
+    // But getInt default handles missing keys.
+    // We'll trust the default values in Automation.h if keys invalid (0 is
+    // valid though). Let's rely on Automation.h defaults strictly if "count"
+    // was missing (implies fresh chip) Actually Automation.h inits array. We
+    // just overwrite if keys exist.
+    feedTimes[i][0] = preferences.getInt(keyH, feedTimes[i][0]);
+    feedTimes[i][1] = preferences.getInt(keyM, feedTimes[i][1]);
+  }
+  preferences.end();
+  Serial.println("Settings Loaded from Flash");
 }
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
@@ -120,31 +169,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
       runFeeder();
     } else if (cmd == "toggle") {
       if (!autoMode) { // Only allow manual toggle if Auto Mode is OFF
-        int id = doc["id"];
-        int pin = -1;
-        switch (id) {
-        case 1:
-          pin = PIN_RELAY_PUMP_FILL;
-          break;
-        case 2:
-          pin = PIN_RELAY_TDS_1;
-          break;
-        case 3:
-          pin = PIN_RELAY_TDS_2;
-          break;
-        case 4:
-          pin = PIN_RELAY_PH_UP;
-          break;
-        case 5:
-          pin = PIN_RELAY_PH_DOWN;
-          break;
-        case 6:
-          pin = PIN_RELAY_SOLENOID;
-          break;
-        }
-        if (pin != -1) {
-          digitalWrite(pin, !digitalRead(pin)); // Toggle
-        }
+        toggleRelay(doc["id"]);
       }
       // Immediately notify clients of state change
       notifyClients();
@@ -158,9 +183,6 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
         preferences.putString("password", new_pass);
         preferences.end();
 
-        // Send confirmation
-        // ESP.restart() will happen via client side reload or manual reboot
-        // Actually, let's force a reboot after a short delay
         delay(1000);
         ESP.restart();
       }
@@ -185,8 +207,9 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
       }
 
       servoDuration = doc["d"];
+      saveInternalSettings();
       Serial.println("Multiple Schedules Updated via Web");
-      notifyClients(); // Broadcast updated schedules
+      notifySettings(); // Broadcast updated schedules
     }
   }
 }
@@ -195,23 +218,36 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,
              AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_DATA) {
     handleWebSocketMessage(arg, data, len);
+  } else if (type == WS_EVT_CONNECT) {
+    Serial.println("WebSocket Connected");
+    notifySettings(client); // Send settings ONLY on connect
   }
 }
 
 // ==========================================
 //              SETUP & LOOP
 // ==========================================
+// WiFi Timer
+unsigned long lastWifiCheck = 0;
+const unsigned long WIFI_CHECK_INTERVAL = 10000; // Check every 10 seconds
+
 void setup() {
   Serial.begin(115200);
 
   // Initialize Pins
   setupSensors();
   setupActuators();
+  loadInternalSettings();
 
   // Connect to WiFi
   WiFi.mode(WIFI_AP_STA); // Dual Mode
 
-  // 1. Setup Soft AP (Hotspot) Always
+  // LOWER TX POWER TO PREVENT BROWNOUT REBOOTS
+  // Default is 19.5dBm (max). Reducing it significantly saves ~100mA current
+  // spike.
+  WiFi.setTxPower(WIFI_POWER_11dBm);
+
+  // 1. Setup Soft AP (Hotspot) Always - START IMMEDIATELY
   WiFi.softAP(ap_ssid, ap_password);
   Serial.print("AP IP Address: ");
   Serial.println(WiFi.softAPIP());
@@ -222,41 +258,31 @@ void setup() {
   password = preferences.getString("password", "");
   preferences.end();
 
-  if (ssid == "") {
-    Serial.println("No WiFi Credentials Saved.");
-  } else {
-    // 3. Try Connect to Router
-    WiFi.begin(ssid.c_str(), password.c_str()); // Fixed: Use .c_str()
-
+  if (ssid != "" && password != "") {
+    // 3. Try Connect into Router (Non-Blocking)
     Serial.print("Connecting to WiFi: ");
     Serial.println(ssid);
-
-    // Timeout for connection (10 seconds)
-    unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-      delay(500);
-      Serial.print(".");
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nConnected!");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-    } else {
-      Serial.println("\nFailed to connect. Running in AP Mode.");
-    }
+    WiFi.begin(ssid.c_str(), password.c_str());
+    WiFi.setSleep(false); // Improve responsiveness
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(true);
+  } else {
+    Serial.println("No WiFi Credentials Saved.");
   }
 
   // Setup Web Server
   ws.onEvent(onEvent);
   server.addHandler(&ws);
 
+  // Serve Index with Caching Headers (10 minutes)
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+    AsyncWebServerResponse *response =
+        request->beginResponse_P(200, "text/html", index_html);
+    response->addHeader("Cache-Control", "public, max-age=600");
+    request->send(response);
   });
 
   // Captive Portal Detection URLs (Apple, Android, Windows)
-  // Use 302 redirects for faster response
   server.on("/hotspot-detect.html", HTTP_GET,
             [](AsyncWebServerRequest *request) {
               request->redirect("http://" + WiFi.softAPIP().toString());
@@ -294,15 +320,13 @@ void setup() {
 
   // Init and get the time
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  Serial.println("Waiting for time...");
 }
 
 void loop() {
   // 1. Handle Feeder Timing (Non-blocking)
   updateFeeder();
 
-  // 2. Update Sensors & Automation periodically (e.g., every 200ms)
-  //    Fast enough for reaction, slow enough to avoid sensor echo interference
+  // 2. Update Sensors & Automation periodically
   static unsigned long lastSensorTime = 0;
   if (millis() - lastSensorTime > 200) {
     updateSensors();
@@ -310,12 +334,12 @@ void loop() {
     lastSensorTime = millis();
   }
 
-  // 3. Limit WebSocket broadcasts to every 500ms to save bandwidth
+  // 3. Limit WebSocket broadcasts to every 1000ms (Reduced form 500ms)
   static unsigned long lastTime = 0;
-  if (millis() - lastTime > 500) {
+  if (millis() - lastTime > 1000) {
     notifyClients();
     lastTime = millis();
-    // Heartbeat to confirm loop is alive
+    // Heartbeat
     Serial.print("Alive: ");
     Serial.println(millis());
   }
@@ -323,15 +347,25 @@ void loop() {
   // 4. Clean up WebSocket clients
   ws.cleanupClients();
 
-  // 5. DNS Server for Captive Portal (throttled to every 50ms)
-  static unsigned long lastDNS = 0;
-  if (millis() - lastDNS > 50) {
-    dnsServer.processNextRequest();
-    lastDNS = millis();
+  // 5. DNS Server for Captive Portal - Process EVERY LOOP for speed
+  dnsServer.processNextRequest();
+
+  // 6. Check Schedule
+  checkSchedule();
+
+  // 7. Non-Blocking WiFi Reconnection Logic
+  if (ssid != "" && millis() - lastWifiCheck > WIFI_CHECK_INTERVAL) {
+    lastWifiCheck = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Reconnecting to WiFi...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+    }
   }
 
-  // No delay() needed here, loop runs as fast as possible
-
-  // 5. Check Schedule
-  checkSchedule();
+  // 8. Handle Deferred Broadcasts (Immediate response to actions)
+  if (needsBroadcast) {
+    notifyClients();
+    needsBroadcast = false;
+  }
 }
