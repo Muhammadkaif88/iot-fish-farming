@@ -388,8 +388,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         function updSensors(d) {
-            // Level (30cm empty, 5cm full -> 25cm range)
-            var lp = Math.max(0, Math.min(100, ((30 - d.level)/25)*100));
+            // Level (15cm empty, 2cm full -> 13cm range)
+            var lp = Math.max(0, Math.min(100, ((15 - d.level)/13)*100));
             $('w-lvl').style.height = lp + '%';
             $('t-txt').innerText = lp.toFixed(0) + '%';
             

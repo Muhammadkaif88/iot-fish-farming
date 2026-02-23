@@ -8,8 +8,10 @@
 
 // --- Constants & Thresholds ---
 // These need to be calibrated!
-const float LEVEL_LOW_CM = 10.0;  // If water level < 10cm, Refill
-const float LEVEL_HIGH_CM = 25.0; // Full tank level
+const float LEVEL_LOW_CM =
+    3.0; // If water level < 3cm from sensor, Fill OFF (Full)
+const float LEVEL_HIGH_CM =
+    12.0; // If water level > 12cm from sensor, Fill ON (Empty)
 
 const float TDS_LOW = 100.0;  // ppm
 const float TDS_HIGH = 500.0; // ppm
@@ -95,9 +97,7 @@ void setupActuators() {
     pinMode(relays[i].pin, OUTPUT);
     digitalWrite(relays[i].pin, HIGH); // Default OFF (Active LOW)
   }
-
-  feederServo.attach(PIN_SERVO);
-  feederServo.write(0); // Initial position
+  // Servo will be attached only when feeding
 }
 
 void setupSensors() {
@@ -171,17 +171,24 @@ float readTurbidity() {
 
 void runFeeder() {
   if (!isFeeding) {
-    feederServo.write(90); // Open
+    if (!feederServo.attached()) {
+      feederServo.attach(PIN_SERVO);
+    }
+    feederServo.write(0); // Rotate opposite side (for continuous servo)
     feedStartTime = millis();
     lastFedMillis = feedStartTime;
     isFeeding = true;
+    Serial.println("Feeding started...");
   }
 }
 
 void updateFeeder() {
   if (isFeeding && millis() - feedStartTime >= (servoDuration * 1000)) {
-    feederServo.write(0); // Close
+    feederServo.write(90); // Stop (for continuous servo)
+    delay(50);             // Short delay for the command to register
+    feederServo.detach();  // Completely stop signals to the servo
     isFeeding = false;
+    Serial.println("Feeding stopped.");
   }
 }
 
