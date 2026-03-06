@@ -245,7 +245,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <header>
             <div>
                 <h3>Smart Fish Farm</h3>
-                <span id="date-time" style="font-size:0.8rem; opacity:0.6">--:--</span>
+                <div id="date-disp" style="font-size:0.7rem; opacity:0.55; margin-top:2px">--- -- ---</div>
+                <div id="time-disp" style="font-size:1rem; font-weight:600; letter-spacing:1px; color:var(--primary)">--:--:--</div>
             </div>
             <div class="status-badge"><div class="status-dot" id="conn-dot"></div><span id="conn-txt">DISC</span></div>
         </header>
@@ -294,12 +295,31 @@ const char index_html[] PROGMEM = R"rawliteral(
             </div>
             
             <!-- Feeder -->
-            <div class="card" style="grid-column: span 2; display:flex; align-items:center; justify-content:space-between">
-                <div>
-                    <div class="card-title">SMART FEEDER</div>
-                    <div style="font-size:1.5rem">🍖 <span id="last-feed">--m ago</span></div>
+            <div class="card" style="grid-column: span 2">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px">
+                    <div class="card-title">🍖 SMART FEEDER</div>
+                    <button class="btn" style="width:auto; padding:8px 18px; font-size:0.85rem" onclick="feed()">Feed Now</button>
                 </div>
-                <button class="btn" style="width:auto; padding:10px 20px" onclick="feed()">Feed Now</button>
+                <div style="display:flex; gap:15px; font-size:0.85rem; margin-bottom:10px">
+                    <div style="flex:1">
+                        <div style="opacity:0.5; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px">Last Fed</div>
+                        <div id="last-feed" style="font-weight:600; margin-top:3px">--:--:--</div>
+                    </div>
+                    <div style="flex:1">
+                        <div style="opacity:0.5; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px">Next Feed</div>
+                        <div id="next-feed" style="font-weight:600; margin-top:3px; color:var(--primary)">--:--:--</div>
+                    </div>
+                </div>
+                <!-- Working time bar (shown only when feeding) -->
+                <div id="feed-working" style="display:none">
+                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:4px">
+                        <span style="color:var(--success); font-weight:600">⚙️ DISPENSING...</span>
+                        <span id="work-time">0s</span>
+                    </div>
+                    <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:3px; overflow:hidden">
+                        <div id="work-bar" style="height:100%; width:0%; background:linear-gradient(90deg,var(--success),var(--primary)); border-radius:3px; transition:width 0.3s"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -312,6 +332,27 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div class="switch-row" style="background:rgba(0, 210, 255, 0.1); border-color:var(--primary)">
             <div class="switch-label">✨ Auto Mode</div>
             <div id="sw-auto" class="toggle checked" onclick="togAuto()"></div>
+        </div>
+
+        <div class="switch-row" style="background:rgba(239, 68, 68, 0.08); border-color:rgba(239,68,68,0.3)">
+            <div class="switch-label">🧹 Tank Clean Mode
+                <span style="font-size:0.65rem; opacity:0.55; font-weight:400; display:block; margin-top:2px">Drain → Refill to 50%</span>
+            </div>
+            <div id="sw-clean" class="toggle" onclick="togClean()"></div>
+        </div>
+
+        <!-- Cleaning status banner - hidden until active -->
+        <div id="clean-banner" style="display:none; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.3); border-radius:14px; padding:12px 15px; margin-bottom:10px; font-size:0.88rem">
+            <div style="display:flex; justify-content:space-between; align-items:center">
+                <div>
+                    <div id="clean-phase-label" style="font-weight:700; color:#ef4444">⏳ Draining...</div>
+                    <div id="clean-phase-sub" style="opacity:0.6; font-size:0.75rem; margin-top:3px">Waiting for tank to empty</div>
+                </div>
+                <div id="clean-phase-icon" style="font-size:2rem">🚰</div>
+            </div>
+            <div style="margin-top:10px; height:6px; background:rgba(255,255,255,0.08); border-radius:3px; overflow:hidden">
+                <div id="clean-prog" style="height:100%; width:0%; background:linear-gradient(90deg,#ef4444,#f59e0b); border-radius:3px; transition:width 1s"></div>
+            </div>
         </div>
 
         <div class="grid">
@@ -365,6 +406,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     <script>
         var ws, t, scheds = [];
+        var feedingStartMs = 0, feedDurSec = 1, workTimer = null;
         const $ = (id) => document.getElementById(id);
 
         function con() {
@@ -388,8 +430,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         function updSensors(d) {
-            // Level (15cm empty, 2cm full -> 13cm range)
-            var lp = Math.max(0, Math.min(100, ((15 - d.level)/13)*100));
+            // Level (15cm empty, 3cm full -> 12cm range)
+            var lp = Math.max(0, Math.min(100, ((15 - d.level)/12)*100));
             $('w-lvl').style.height = lp + '%';
             $('t-txt').innerText = lp.toFixed(0) + '%';
             
@@ -397,7 +439,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             $('ph-val').innerText = d.ph.toFixed(1);
             var phP = ((d.ph - 0) / 14) * 100; // 0-14 scale
             $('ph-marker').style.left = phP + '%';
-            $('ph-stat').innerText = d.ph < 6 ? 'Acidic' : (d.ph > 8 ? 'Alkaline' : 'Neutral');
+            $('ph-stat').innerText = d.ph < 6 ? 'Acidic/Low' : (d.ph > 7 ? 'Alkaline/High' : 'Normal/Neutral');
             
             // TDS
             $('tds-val').innerHTML = Math.round(d.tds) + '<span class="unit">ppm</span>';
@@ -411,7 +453,7 @@ const char index_html[] PROGMEM = R"rawliteral(
             // Ring Status
             var r = $('ring');
             var txt = $('sys-status');
-            if(lp < 20 || d.ph < 5 || d.ph > 9 || d.turb < 2.0) {
+            if(lp < 20 || d.ph < 5 || d.ph > 8 || d.turb < 2.0) {
                 r.className = 'health-ring err';
                 txt.innerText = 'ATTN';
             } else {
@@ -425,14 +467,56 @@ const char index_html[] PROGMEM = R"rawliteral(
             var sw = $('sw-auto');
             if(d.auto) sw.classList.add('checked'); else sw.classList.remove('checked');
             
-            // Buttons
+            // Relay Buttons
             for(var i=1; i<=6; i++) {
                 var b = $('b'+i);
                 if(d['p'+i]) b.classList.add('active'); else b.classList.remove('active');
             }
-            
-            // Time
-            if(d.ct) $('date-time').innerText = d.ct;
+
+            // Cleaning Mode Toggle + Banner
+            var sc = $('sw-clean');
+            var banner = $('clean-banner');
+            if(d.cleaning) {
+                sc.classList.add('checked');
+                banner.style.display = 'block';
+                var phase = d.cleanPhase;
+                if(phase === 0) {
+                    // Draining
+                    $('clean-phase-label').innerText = '🚰 Phase 1: Draining...';
+                    $('clean-phase-sub').innerText   = 'Solenoid open — waiting for tank to empty (0%)';
+                    $('clean-phase-icon').innerText  = '🕳️';
+                    $('clean-prog').style.width      = '33%';
+                    $('clean-prog').style.background = 'linear-gradient(90deg,#ef4444,#f59e0b)';
+                } else if(phase === 1) {
+                    // Refilling
+                    $('clean-phase-label').innerText = '💧 Phase 2: Refilling...';
+                    $('clean-phase-sub').innerText   = 'Fill pump ON — filling to 50% water level';
+                    $('clean-phase-icon').innerText  = '🚿';
+                    $('clean-prog').style.width      = '66%';
+                    $('clean-prog').style.background = 'linear-gradient(90deg,#3a7bd5,#00d2ff)';
+                }
+            } else {
+                sc.classList.remove('checked');
+                banner.style.display = 'none';
+            }
+
+            // Feeder working bar
+            if(d.feeding) {
+                if(!feedingStartMs) feedingStartMs = Date.now();
+                showWorkingBar();
+            } else {
+                feedingStartMs = 0;
+                $('feed-working').style.display = 'none';
+                if(workTimer) { clearInterval(workTimer); workTimer = null; }
+            }
+
+            // Time display
+            if(d.ct) {
+                $('time-disp').innerText = d.ct;
+            }
+            if(d.dt) {
+                $('date-disp').innerText = d.dt;
+            }
         }
 
         function updSet(d) {
@@ -441,19 +525,48 @@ const char index_html[] PROGMEM = R"rawliteral(
                 scheds = d.times;
                 renSched();
             }
-            if(d.d) $('dur').value = d.d;
-            if(d.nr > -1) {
+            if(d.d) { $('dur').value = d.d; feedDurSec = parseFloat(d.d); }
+            // Next feed countdown & time
+            if(d.nr > -1 && d.nh !== undefined && d.nh > -1) {
+                var hr12 = d.nh % 12;
+                if (hr12 === 0) hr12 = 12;
+                var ap = d.nh >= 12 ? 'PM' : 'AM';
+                var absTime = hr12 + ':' + z(d.nm) + ' ' + ap;
+                
                 var h = Math.floor(d.nr / 3600);
                 var m = Math.floor((d.nr % 3600) / 60);
-                var s = d.nr % 60;
-                $('last-feed').innerHTML = '<span style="font-size:1rem; opacity:0.8">Next in:</span><br>' + 
-                                           z(h) + ':' + z(m) + ':' + z(s);
-            } else if(d.lf > -1) {
-                var m = Math.floor(d.lf / 60);
-                $('last-feed').innerText = 'Last: ' + m + 'm ago';
+                var s = Math.floor(d.nr % 60);
+                
+                if (h > 0) {
+                    $('next-feed').innerText = absTime + ' (in ' + h + 'h ' + m + 'm)';
+                } else if (m > 0) {
+                    $('next-feed').innerText = absTime + ' (in ' + m + 'm)';
+                } else {
+                    $('next-feed').innerText = absTime + ' (in ' + s + 's)';
+                }
             } else {
-                 $('last-feed').innerText = '--:--:--';
+                $('next-feed').innerText = '--:--:--';
             }
+            // Last fed
+            if(d.lf > -1) {
+                var lm = Math.floor(d.lf / 60);
+                var ls = d.lf % 60;
+                $('last-feed').innerText = lm > 0 ? lm + 'm ' + ls + 's ago' : ls + 's ago';
+            } else {
+                $('last-feed').innerText = 'Never';
+            }
+        }
+
+        function showWorkingBar() {
+            $('feed-working').style.display = 'block';
+            if(workTimer) return; // already running
+            workTimer = setInterval(function() {
+                if(!feedingStartMs) { clearInterval(workTimer); workTimer = null; return; }
+                var elapsed = (Date.now() - feedingStartMs) / 1000;
+                var pct = Math.min(100, (elapsed / feedDurSec) * 100);
+                $('work-bar').style.width = pct + '%';
+                $('work-time').innerText = elapsed.toFixed(1) + 's / ' + feedDurSec + 's';
+            }, 100);
         }
 
         // Navigation
@@ -477,6 +590,15 @@ const char index_html[] PROGMEM = R"rawliteral(
             ws.send(JSON.stringify({cmd:'auto', val:v}));
         }
 
+        function togClean() {
+            var sw = $('sw-clean');
+            var enabling = !sw.classList.contains('checked');
+            if(enabling) {
+                if(!confirm('Start Tank Cleaning?\n\nPhase 1: Drain (Solenoid opens)\nPhase 2: Refill pump to 50%\n\nThis will override Auto Mode on relay 1 & 6.')) return;
+            }
+            ws.send(JSON.stringify({cmd:'clean', val:enabling}));
+        }
+
         function feed() {
             if(confirm('Dispense food now?')) {
                 ws.send(JSON.stringify({cmd:'feed'}));
@@ -484,15 +606,43 @@ const char index_html[] PROGMEM = R"rawliteral(
         }
 
         // Settings Logic
+        function updSchedAlt(i) {
+            var h = parseInt($('h'+i).value);
+            var m = parseInt($('m'+i).value);
+            var ap = $('ap'+i).value;
+            if (h === 12 && ap === 'AM') h = 0;
+            if (h < 12 && ap === 'PM') h += 12;
+            scheds[i] = [h, m];
+        }
+
         function renSched() {
-            var h = '';
+            var html = '';
             scheds.forEach((t, i) => {
-                h += `<div style="display:flex; gap:10px; margin-bottom:5px">
-                    <input type="time" value="${z(t[0])}:${z(t[1])}" onchange="updSched(${i}, this.value)">
-                    <button class="btn danger" style="width:50px" onclick="delSched(${i})">X</button>
+                var hr12 = t[0] % 12;
+                if (hr12 === 0) hr12 = 12;
+                var ap = t[0] >= 12 ? 'PM' : 'AM';
+                
+                var hOpts = '';
+                for(let x=1; x<=12; x++) hOpts += `<option value="${x}" ${x===hr12?'selected':''}>${z(x)}</option>`;
+                var mOpts = '';
+                for(let x=0; x<=59; x++) mOpts += `<option value="${x}" ${x===t[1]?'selected':''}>${z(x)}</option>`;
+
+                html += `<div style="display:flex; gap:5px; margin-bottom:10px; align-items:center;">
+                    <select id="h${i}" onchange="updSchedAlt(${i})" style="margin-bottom:0; width:auto; padding:8px 5px; flex:1">
+                        ${hOpts}
+                    </select>
+                    <span style="font-weight:bold">:</span>
+                    <select id="m${i}" onchange="updSchedAlt(${i})" style="margin-bottom:0; width:auto; padding:8px 5px; flex:1">
+                        ${mOpts}
+                    </select>
+                    <select id="ap${i}" onchange="updSchedAlt(${i})" style="margin-bottom:0; width:auto; padding:8px 5px; flex:1">
+                        <option value="AM" ${ap==='AM'?'selected':''}>AM</option>
+                        <option value="PM" ${ap==='PM'?'selected':''}>PM</option>
+                    </select>
+                    <button class="btn danger" style="margin-bottom:0; width:45px; padding:8px; display:inline-block;" onclick="delSched(${i})">X</button>
                 </div>`;
             });
-            $('sched-list').innerHTML = h;
+            $('sched-list').innerHTML = html;
         }
         
         function z(n) { return n<10?'0'+n:n; }
@@ -501,11 +651,6 @@ const char index_html[] PROGMEM = R"rawliteral(
             if(scheds.length >= 5) return alert('Max 5 schedules');
             scheds.push([8, 0]);
             renSched();
-        }
-
-        function updSched(i, v) {
-            var [h, m] = v.split(':').map(Number);
-            scheds[i] = [h, m];
         }
 
         function delSched(i) {
