@@ -8,18 +8,22 @@
 
 // --- Constants & Thresholds ---
 // These need to be calibrated!
-const float LEVEL_LOW_CM =
-    3.0; // If water level < 3cm from sensor, Fill OFF (Full)
-const float LEVEL_HIGH_CM =
-    12.0; // If water level > 12cm from sensor, Fill ON (Empty)
+// --- Constants & Thresholds ---
+// These need to be calibrated!
+// If water level < 3cm from sensor, Fill OFF (Full)
+const float LEVEL_LOW_CM = 3.0;
 
-const float TDS_LOW = 100.0;  // ppm
-const float TDS_HIGH = 500.0; // ppm
+// If water level > 14cm from sensor, Fill ON (Empty)
+const float LEVEL_HIGH_CM = 14.0;
 
-const float PH_LOW = 6.5;
-const float PH_HIGH = 8.5;
+const float TDS_LOW = 100.0;  // ppm - Too low, need minerals
+const float TDS_HIGH = 500.0; // ppm - Too high, need dilution
 
-const float TURBIDITY_HIGH_V = 3.0; // Threshold Voltage
+const float PH_LOW = 6.0;     // Acidic threshold
+const float PH_HIGH = 7.5;    // Alkaline threshold
+
+const float TURBIDITY_DIRTY_NTU = 1000.0; // Threshold to trigger auto-cleaning
+const float TURBIDITY_CLEAR_NTU = 200.0;  // Threshold where water is considered "Clear"
 
 // --- Global Objects ---
 Servo feederServo;
@@ -30,9 +34,15 @@ float currentTDS = 0;
 float currentPH = 0;
 float currentTurbidity = 0;
 
-bool autoMode = true; // false = Manual Override via Web
+bool autoMode = false; // false = Manual Override via Web
 bool isFeeding = false;
 unsigned long feedStartTime = 0;
+
+// --- Tank Cleaning Mode ---
+bool cleaningMode = false;
+// Phase 0 = Draining (solenoid open)
+// Phase 1 = Refilling (fill pump on)
+int cleaningPhase = 0;
 
 // Relay Management
 struct RelayControl {
@@ -42,16 +52,16 @@ struct RelayControl {
 };
 
 // Index 0 unused, 1-6 map to pumps/solenoid
-// 1: Fill, 2: TDS1, 3: TDS2, 4: pH Up, 5: pH Down, 6: Solenoid
+// 1: Fill, 2: TDS Correction A, 3: TDS Correction B, 4: pH Up, 5: pH Down, 6: Solenoid
 RelayControl relays[7];
 
 // Default Settings (Can be updated via Web)
 const int MAX_FEED_TIMES = 5;
 int feedTimes[MAX_FEED_TIMES][2] = {{7, 0},
-                                    {-1, -1},
-                                    {-1, -1},
-                                    {-1, -1},
-                                    {-1, -1}}; // [hour, minute], -1 = inactive
+                                     {-1, -1},
+                                     {-1, -1},
+                                     {-1, -1},
+                                     {-1, -1}}; // [hour, minute], -1 = inactive
 int feedCount = 1;                             // Number of active schedules
 int servoDuration = 1;                         // 1 Second default
 
@@ -61,19 +71,19 @@ unsigned long lastFedMillis = 0; // Uptime when last fed
 
 // --- Helper Functions ---
 
-// Safe Relay Control with Debounce
+// Safe Relay Control with Debounce to protect hardware
 void setRelayState(int id, bool state) {
   if (id < 1 || id > 6)
     return;
 
-  // Debounce: 200ms to prevent rapid relay chatter
+  // Debounce: 200ms to prevent rapid relay chatter from noisy sensor data
   if (millis() - relays[id].lastToggle < 200)
     return;
 
   if (relays[id].active != state) {
     relays[id].active = state;
     relays[id].lastToggle = millis();
-    // Active LOW logic: ON = LOW, OFF = HIGH
+    // Active LOW logic: ON = LOW, OFF = HIGH (Common in 5V/12V Relay Modules)
     digitalWrite(relays[id].pin, state ? LOW : HIGH);
   }
 }
@@ -97,7 +107,6 @@ void setupActuators() {
     pinMode(relays[i].pin, OUTPUT);
     digitalWrite(relays[i].pin, HIGH); // Default OFF (Active LOW)
   }
-  // Servo will be attached only when feeding
 }
 
 void setupSensors() {
@@ -106,11 +115,11 @@ void setupSensors() {
   pinMode(PIN_MANUAL_SWITCH, INPUT_PULLUP);
 }
 
+// Median filter for Ultrasonic to remove outliers
 float readUltrasonic() {
   const int numReadings = 5;
   float readings[numReadings];
 
-  // Take multiple readings
   for (int i = 0; i < numReadings; i++) {
     digitalWrite(PIN_TRIG, LOW);
     delayMicroseconds(2);
@@ -118,16 +127,16 @@ float readUltrasonic() {
     delayMicroseconds(10);
     digitalWrite(PIN_TRIG, LOW);
 
-    long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout
+    long duration = pulseIn(PIN_ECHO, HIGH, 30000); // 30ms timeout (~5m range)
     if (duration == 0) {
       readings[i] = 999; // Error/Timeout
     } else {
       readings[i] = duration * 0.0343 / 2;
     }
-    delay(10); // Small delay between readings
+    delay(10);
   }
 
-  // Sort the readings (Bubble Sort)
+  // Bubble Sort for median
   for (int i = 0; i < numReadings - 1; i++) {
     for (int j = 0; j < numReadings - i - 1; j++) {
       if (readings[j] > readings[j + 1]) {
@@ -138,35 +147,38 @@ float readUltrasonic() {
     }
   }
 
-  // Get Median (middle element)
-  float medianDistance = readings[numReadings / 2];
-
-  // Debug Output
-  Serial.print("Ultra raw: [");
-  for (int i = 0; i < numReadings; i++) {
-    Serial.print(readings[i]);
-    if (i < numReadings - 1)
-      Serial.print(", ");
-  }
-  Serial.print("] -> Median: ");
-  Serial.println(medianDistance);
-
-  return medianDistance;
+  return readings[numReadings / 2];
 }
 
 float readTDS() {
   int raw = analogRead(PIN_TDS);
-  return map(raw, 0, 4095, 0, 1000); // Demo mapping
+  float voltage = raw * (3.3 / 4095.0);
+  // Basic TDS formula (needs calibration for specific sensor)
+  float tdsValue = (133.42 * pow(voltage, 3) - 255.86 * pow(voltage, 2) + 857.39 * voltage) * 0.5;
+  return tdsValue;
 }
 
 float readPH() {
   int raw = analogRead(PIN_PH);
-  return map(raw, 0, 4095, 0, 1400) / 100.0; // Demo mapping
+  // Mapping 0-3.3V to 0-14 pH (Linear approximation)
+  return (raw / 4095.0) * 14.0;
 }
 
 float readTurbidity() {
   int raw = analogRead(PIN_TURBIDITY);
-  return (raw / 4095.0) * 3.3;
+  float voltage = (raw / 4095.0) * 3.3;
+  
+  // High Voltage (>2.5V) = Clear Water
+  // Low Voltage (<1.0V) = Very Dirty Water
+  float ntu = 0;
+  if (voltage < 2.5) {
+    ntu = 3000; // Max dirty
+  } else {
+    // Linear mapping for demonstration: 3.3V -> 0 NTU, 2.5V -> 3000 NTU
+    ntu = (3.3 - voltage) * (3000.0 / 0.8);
+  }
+  
+  return (ntu < 0) ? 0 : (ntu > 3000 ? 3000 : ntu);
 }
 
 void runFeeder() {
@@ -174,74 +186,64 @@ void runFeeder() {
     if (!feederServo.attached()) {
       feederServo.attach(PIN_SERVO);
     }
-    feederServo.write(0); // Rotate opposite side (for continuous servo)
+    feederServo.write(0); // Full speed rotation for continuous servo
     feedStartTime = millis();
     lastFedMillis = feedStartTime;
     isFeeding = true;
-    Serial.println("Feeding started...");
+    Serial.println("Feeder: DISPENSING");
   }
 }
 
 void updateFeeder() {
   if (isFeeding && millis() - feedStartTime >= (servoDuration * 1000)) {
-    feederServo.write(90); // Stop (for continuous servo)
-    delay(50);             // Short delay for the command to register
-    feederServo.detach();  // Completely stop signals to the servo
+    feederServo.write(90); // Stop continuous servo
+    delay(50);
+    feederServo.detach();  // Detach to save power and prevent jitter
     isFeeding = false;
-    Serial.println("Feeding stopped.");
+    Serial.println("Feeder: STOPPED");
   }
 }
 
 void checkSchedule() {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return;
-  }
+  if (!getLocalTime(&timeinfo)) return;
 
-  int currentSlot =
-      timeinfo.tm_yday * 10000 + timeinfo.tm_hour * 100 + timeinfo.tm_min;
+  int currentSlot = timeinfo.tm_yday * 10000 + timeinfo.tm_hour * 100 + timeinfo.tm_min;
 
   for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
-    if (feedTimes[i][0] == -1)
-      continue;
+    if (feedTimes[i][0] == -1) continue;
 
-    if (timeinfo.tm_hour == feedTimes[i][0] &&
-        timeinfo.tm_min == feedTimes[i][1]) {
+    if (timeinfo.tm_hour == feedTimes[i][0] && timeinfo.tm_min == feedTimes[i][1]) {
       if (currentSlot != lastFedSlot) {
         runFeeder();
         lastFedSlot = currentSlot;
         break;
       }
     }
-  } // End for loop
-} // End checkSchedule
+  }
+}
 
-long getSecondsToNextFeed() {
+void getNextFeedTime(int &next_h, int &next_m, long &seconds_remaining) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    return -1;
+    seconds_remaining = -1; next_h = -1; next_m = -1;
+    return;
   }
 
-  long currentSeconds =
-      timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+  long currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
   long minDiff = -1;
 
   for (int i = 0; i < feedCount && i < MAX_FEED_TIMES; i++) {
-    if (feedTimes[i][0] == -1)
-      continue;
-
+    if (feedTimes[i][0] == -1) continue;
     long feedSeconds = feedTimes[i][0] * 3600 + feedTimes[i][1] * 60;
     long diff = feedSeconds - currentSeconds;
-
-    if (diff < 0) {  // If time passed today
-      diff += 86400; // Then it's tomorrow (+24h)
-    }
+    if (diff < 0) diff += 86400; // Tomorrow
 
     if (minDiff == -1 || diff < minDiff) {
-      minDiff = diff;
+      minDiff = diff; next_h = feedTimes[i][0]; next_m = feedTimes[i][1];
     }
   }
-  return minDiff;
+  seconds_remaining = minDiff;
 }
 
 void updateSensors() {
@@ -251,59 +253,73 @@ void updateSensors() {
   currentTurbidity = readTurbidity();
 }
 
-void runAutomation() {
-  if (!autoMode)
-    return;
+// Tank Cleaning State Machine
+void runCleaning() {
+  if (!cleaningMode) return;
 
-  // 1. Water Level Control
-  // Distance > HIGH (e.g. 30 > 25) -> Level Low -> Fill ON
-  if (currentDistance > LEVEL_HIGH_CM) {
-    setRelayState(1, true);
-  } else if (currentDistance < LEVEL_LOW_CM) {
-    setRelayState(1, false);
+  // PHASE 0: Draining
+  if (cleaningPhase == 0) {
+    setRelayState(1, false); // Fill pump OFF
+    setRelayState(6, true);  // Solenoid OPEN (drain)
+
+    if (currentDistance >= 14.5) { // Tank nearly empty
+      cleaningPhase = 1;
+      setRelayState(6, false); // Close solenoid
+      Serial.println("Cleaning: Tank empty. Starting refill...");
+    }
   }
+  // PHASE 1: Refilling
+  else if (cleaningPhase == 1) {
+    setRelayState(6, false); // Solenoid CLOSED
+    setRelayState(1, true);  // Fill pump ON
 
-  // 2. TDS Control (With Hysteresis)
-  // Deadband: 50ppm
-  if (currentTDS > TDS_HIGH) {
-    setRelayState(2, true); // Drain/Repl
-    setRelayState(3, false);
-  } else if (currentTDS < (TDS_HIGH - 50) && currentTDS > (TDS_LOW + 50)) {
-    // In "Safe Zone" - turn off both
-    setRelayState(2, false);
-    setRelayState(3, false);
-  } else if (currentTDS < TDS_LOW) {
-    setRelayState(2, false);
-    setRelayState(3, true); // Add Minerals
-  }
-
-  // 3. pH Control (With Hysteresis)
-  // Deadband: 0.2 pH
-  if (currentPH < PH_LOW) {
-    setRelayState(4, true); // pH Up
-    setRelayState(5, false);
-  } else if (currentPH > (PH_LOW + 0.2) && currentPH < (PH_HIGH - 0.2)) {
-    // In "Safe Zone" - turn off both
-    setRelayState(4, false);
-    setRelayState(5, false);
-  } else if (currentPH > PH_HIGH) {
-    setRelayState(4, false);
-    setRelayState(5, true); // pH Down
-  }
-
-  // 4. Turbidity -> Solenoid
-  // Add simple hysteresis for solenoid too
-  if (currentTurbidity < 2.0) {
-    setRelayState(6, true); // Open Valve (Dirty)
-  } else if (currentTurbidity > 2.5) {
-    // Only turn off if significantly clear
-    // Check Manual Switch first (Active LOW)
-    if (digitalRead(PIN_MANUAL_SWITCH) == LOW) {
-      setRelayState(6, true);
-    } else {
-      setRelayState(6, false);
+    if (currentDistance <= 9.0) { // Tank refilled to 50%
+      setRelayState(1, false); // Pump OFF
+      cleaningMode = false;
+      cleaningPhase = 0;
+      Serial.println("Cleaning: DONE.");
     }
   }
 }
+
+void runAutomation() {
+  if (!autoMode || cleaningMode) return;
+
+  // 1. Water Level Control
+  if (currentDistance > LEVEL_HIGH_CM) {
+    setRelayState(1, true); // Too low, fill up
+  } else if (currentDistance < LEVEL_LOW_CM) {
+    setRelayState(1, false); // Full, stop
+  }
+
+  // 2. TDS Control (Hysteresis)
+  if (currentTDS > TDS_HIGH) {
+    setRelayState(2, true);  // High TDS: Drain/Refill
+    setRelayState(3, false);
+  } else if (currentTDS < TDS_LOW) {
+    setRelayState(2, false);
+    setRelayState(3, true);  // Low TDS: Add Minerals
+  } else if (currentTDS > (TDS_LOW + 20) && currentTDS < (TDS_HIGH - 20)) {
+    setRelayState(2, false); // Stable Zone
+    setRelayState(3, false);
+  }
+
+  // 3. pH Control
+  if (currentPH < PH_LOW) {
+    setRelayState(4, true);  setRelayState(5, false); // pH Up
+  } else if (currentPH > PH_HIGH) {
+    setRelayState(4, false); setRelayState(5, true);  // pH Down
+  } else {
+    setRelayState(4, false); setRelayState(5, false); // Stable
+  }
+
+  // 4. Turbidity Trigger
+  if (currentTurbidity > TURBIDITY_DIRTY_NTU) {
+    cleaningMode = true;
+    cleaningPhase = 0;
+    Serial.println("Automation: Dirty water detected! Starting Clean Cycle.");
+  }
+}
+
 
 #endif // AUTOMATION_H

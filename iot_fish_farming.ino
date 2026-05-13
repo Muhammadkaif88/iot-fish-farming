@@ -94,17 +94,34 @@ void notifyClients() {
   doc["p6"] = relays[6].active;
 
   doc["lf"] = (lastFedMillis > 0) ? (millis() - lastFedMillis) / 1000 : -1;
-  doc["nr"] = getSecondsToNextFeed();
+  int n_h, n_m;
+  long n_sec;
+  getNextFeedTime(n_h, n_m, n_sec);
+  doc["nr"] = n_sec;
+  doc["nh"] = n_h;
+  doc["nm"] = n_m;
+
+  // Cleaning mode state
+  doc["cleaning"] = cleaningMode;
+  doc["cleanPhase"] = cleaningPhase;
 
   // Get current IST time
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    char timeStr[10];
-    strftime(timeStr, sizeof(timeStr), "%H:%M", &timeinfo);
+    char timeStr[16];
+    strftime(timeStr, sizeof(timeStr), "%I:%M:%S %p",
+             &timeinfo); // hh:mm:ss AM/PM
     doc["ct"] = timeStr;
+    char dateStr[16];
+    strftime(dateStr, sizeof(dateStr), "%a %d %b",
+             &timeinfo); // e.g. "Thu 05 Mar"
+    doc["dt"] = dateStr;
   } else {
-    doc["ct"] = "--:--";
+    doc["ct"] = "--:--:--";
+    doc["dt"] = "--- -- ---";
   }
+  // Feeder active flag
+  doc["feeding"] = isFeeding;
 
   String output2;
   serializeJson(doc, output2);
@@ -165,6 +182,22 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     String cmd = doc["cmd"];
     if (cmd == "auto") {
       autoMode = doc["val"];
+    } else if (cmd == "clean") {
+      // Toggle or set cleaning mode from the web
+      bool enable = doc["val"];
+      if (enable && !cleaningMode) {
+        cleaningMode = true;
+        cleaningPhase = 0; // Always start from drain phase
+        Serial.println("Tank Cleaning Mode: STARTED");
+      } else if (!enable && cleaningMode) {
+        // Manual cancel: turn off both relays
+        cleaningMode = false;
+        cleaningPhase = 0;
+        setRelayState(1, false);
+        setRelayState(6, false);
+        Serial.println("Tank Cleaning Mode: CANCELLED");
+      }
+      notifyClients();
     } else if (cmd == "feed") {
       runFeeder();
     } else if (cmd == "toggle") {
@@ -282,27 +315,51 @@ void setup() {
     request->send(response);
   });
 
-  // Captive Portal Detection URLs (Apple, Android, Windows)
-  server.on("/hotspot-detect.html", HTTP_GET,
-            [](AsyncWebServerRequest *request) {
-              request->redirect("http://" + WiFi.softAPIP().toString());
-            });
-  server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->redirect("http://" + WiFi.softAPIP().toString());
+  // ---- Captive Portal Detection URLs ----
+  // The OS probes these URLs; they MUST return 302 redirects (not 200)
+  // to trigger the "Sign in to Network" popup.
+
+  // Apple / iOS / macOS
+  server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
   });
-  server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->redirect("http://" + WiFi.softAPIP().toString());
-  });
-  server.on("/redirect", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->redirect("http://" + WiFi.softAPIP().toString());
-  });
-  server.on("/success.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", "success");
+  server.on("/library/test/success.html", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
   });
 
-  // Captive Portal Catch-All - Always serve the portal
+  // Android (AOSP / Google)
+  server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/gen_204", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/mobile/status.php", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/ncsi.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+
+  // Windows / Microsoft
+  server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/redirect", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/success.txt", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+  server.on("/msdownload/update/v3/static/trustedroots/roots.cab", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
+  });
+
+  // Captive Portal Catch-All
+  // For any unknown URL, redirect to the portal page (triggers Sign-In popup)
   server.onNotFound([](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html);
+    // If it looks like a captive portal probe, redirect so the OS shows the popup
+    request->redirect("http://" + WiFi.softAPIP().toString() + "/");
   });
 
   server.begin();
@@ -330,6 +387,7 @@ void loop() {
   static unsigned long lastSensorTime = 0;
   if (millis() - lastSensorTime > 200) {
     updateSensors();
+    runCleaning(); // Cleaning mode takes priority over auto
     runAutomation();
     lastSensorTime = millis();
   }
